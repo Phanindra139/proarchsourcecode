@@ -1,0 +1,200 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless patterns - Amazon API Gateway REST API with S3 integration
+
+Resources:
+  CloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'Serverless website OA'
+
+  CloudfrontDistribution:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Comment: "Cloudfront distribution for serverless website"
+        DefaultRootObject: "index.html"
+        Enabled: true
+        HttpVersion: http2
+        # List of origins that Cloudfront will connect to
+        Origins:
+          - Id: s3-website
+            DomainName: !GetAtt S3Bucket.DomainName
+            S3OriginConfig:
+              # Restricting Bucket access through an origin access identity
+              OriginAccessIdentity: 
+                Fn::Sub: 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        # To connect the CDN to the origins you need to specify behaviours
+        DefaultCacheBehavior:
+          # Compress resources automatically ( gzip )
+          Compress: 'true'
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: s3-website
+          ViewerProtocolPolicy : redirect-to-https
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Change bucket name to reflect your website
+      BucketName: phani.com
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+      # Restricting access to cloudfront only.
+        Statement:
+          -
+            Effect: Allow
+            Action: 's3:GetObject'
+            Resource:
+              - !Sub "arn:aws:s3:::${S3Bucket}/*"
+            Principal:
+              AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}"
+
+  BasicAuthorizerFunction:    #lambda authorizer for apigateway root url of Cloud Front Distribution 
+    Type: AWS::Serverless::Function   
+    Properties:
+      CodeUri: ./handler.zip
+      Handler: src.app.lambda_handler
+      Runtime: python3.7
+  
+  # REST API
+  AppApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: apigw-s3-proxy
+      Description: S3 integraton REST API demo
+
+  ResourceFolder:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !GetAtt AppApi.RootResourceId
+      PathPart: '{folder}'
+
+  ResourceItem:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !Ref ResourceFolder
+      PathPart: '{item}'
+
+  RootMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !GetAtt AppApi.RootResourceId
+      HttpMethod: GET
+      #AuthorizationType: AWS_IAM   #configuring Lambda Authorizer 
+      Auth:
+        Authorizers:
+          BasicAuthorizer:
+            FunctionPayloadType: TOKEN
+            FunctionArn: !ImportValue BasicAuthorizerFunction-Arn
+            Identity:
+              Header: Authorization
+              ValidationExpression: proarch
+              ReauthorizeEvery: 0
+        DefaultAuthorizer: BasicAuthorizer
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: GET
+        Uri: !GetAtt CloudfrontDistribution.Arn #specify the endpoint of cloudfront configured 
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Content-Length: integration.response.header.Content-Length
+              method.response.header.Content-Type: integration.response.header.Content-Type
+              method.response.header.Timestamp: integration.response.header.Date
+          - StatusCode: 400
+            SelectionPattern: 4\d{2}
+          - StatusCode: 500
+            SelectionPattern: 5\d{2}
+        PassthroughBehavior: WHEN_NO_MATCH
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Content-Length: true
+            method.response.header.Content-Type: true
+            method.response.header.Timestamp: true
+        - StatusCode: 400
+        - StatusCode: 500
+
+  ItemMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !Ref ResourceItem
+      HttpMethod: PUT
+      #AuthorizationType: AWS_IAM
+      RequestParameters:
+        method.request.path.item: true
+        method.request.path.folder: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: PUT
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:s3:path/{bucket}/{object}
+        Credentials: !GetAtt ApiGatewayS3Fullaccess.Arn  #change this read only to write 
+        IntegrationResponses:
+        - StatusCode: 200
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestParameters:
+          integration.request.path.bucket: method.request.path.folder
+          integration.request.path.object: method.request.path.item
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+    - RootMethodGet
+    Properties:
+      RestApiId: !Ref AppApi
+  
+  Stage:  
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: Prod
+      RestApiId: !Ref AppApi
+      DeploymentId: !Ref Deployment
+
+  ApiGatewayS3Fullaccess:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+  
+
+Outputs:
+
+  # API Gateway endpoint to be used during tests
+  AppApiEndpoint:
+    Description: API Endpoint
+    Value: !Sub "https://${AppApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+  BasicAuthorizerFunction:
+    Description: Basic authorizer Lambda Function ARN
+    Value: !GetAtt BasicAuthorizerFunction.Arn
+    Export:
+      Name: BasicAuthorizerFunction-Arn
