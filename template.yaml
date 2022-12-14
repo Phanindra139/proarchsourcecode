@@ -62,9 +62,11 @@ Resources:
   BasicAuthorizerFunction:    #lambda authorizer for apigateway root url of Cloud Front Distribution 
     Type: AWS::Serverless::Function   
     Properties:
-      CodeUri: ./handler.zip
-      Handler: src.app.lambda_handler
-      Runtime: python3.7
+      Code:
+        S3Bucket: proarchphani
+        S3Key: index.zip
+      Handler: index.handler
+      Runtime: nodejs18.x 
   
   # REST API
   AppApi:
@@ -99,10 +101,6 @@ Resources:
           BasicAuthorizer:
             FunctionPayloadType: TOKEN
             FunctionArn: !ImportValue BasicAuthorizerFunction-Arn
-            Identity:
-              Header: Authorization
-              ValidationExpression: proarch
-              ReauthorizeEvery: 0
         DefaultAuthorizer: BasicAuthorizer
       Integration:
         Type: AWS
