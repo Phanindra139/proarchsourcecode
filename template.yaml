@@ -42,7 +42,7 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       # Change bucket name to reflect your website
-      BucketName: phani.com
+      BucketName: phaniminfy.com
 
   S3BucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -62,9 +62,9 @@ Resources:
   BasicAuthorizerFunction:    #lambda authorizer for apigateway root url of Cloud Front Distribution 
     Type: AWS::Serverless::Function   
     Properties:
-      Code:
-        S3Bucket: proarchphani
-        S3Key: index.zip
+      CodeUri:
+        Bucket: proarchphani
+        Key: index.zip
       Handler: index.handler
       Runtime: nodejs18.x 
   
@@ -100,7 +100,7 @@ Resources:
         Authorizers:
           BasicAuthorizer:
             FunctionPayloadType: TOKEN
-            FunctionArn: !ImportValue BasicAuthorizerFunction-Arn
+            FunctionArn: !GetAtt  BasicAuthorizerFunction.Arn
         DefaultAuthorizer: BasicAuthorizer
       Integration:
         Type: AWS
